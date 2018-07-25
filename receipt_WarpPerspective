@@ -1,0 +1,127 @@
+# -*- coding:utf-8 -*-
+# ---------------- #
+# author：XinAlo   #
+#   2018-07-10     #
+# Extract receipt  #
+# ---------------- #
+
+import numpy as np
+import cv2
+
+
+class ReceiptExtract(object):
+    def __init__(self, img_org, re_height=800):
+        self.img = img_org
+        self.width = img_org.shape[1]
+        self.height = img_org.shape[0]
+        self.re_height = re_height
+        self.scale = re_height / self.height
+        self.re_width = self.width * self.scale
+        self.params = self.extract_params()
+        self.min_area = self.params[0]
+        self.max_area = self.params[1]
+        self.re_contour = self.params[2]
+
+    def resize(self):
+        return cv2.resize(self.img, (int(self.re_width), self.re_height))
+
+    def extract_params(self):
+        max_area = (self.re_height - 10) * (self.re_width - 10)
+        min_area = max_area * 0.3
+        img_contour = np.array([[5, 5], [5, self.re_height - 5],
+                                [self.re_width - 5, self.re_height - 5], [self.re_width - 5, 0]])
+        return [min_area, max_area, img_contour]
+
+    @staticmethod
+    def sort_point(pts):
+        diff = np.diff(pts, axis=1)
+        sum_m = pts.sum(axis=1)
+        # 4个角点
+        return np.array([pts[np.argmin(sum_m)],
+                         pts[np.argmax(diff)],
+                         pts[np.argmax(sum_m)],
+                         pts[np.argmin(diff)]])
+
+    @staticmethod
+    def contour_offset(cnt, offset):
+        # Matrix addition
+        cnt += offset
+        cnt[cnt < 0] = 0
+        return cnt
+
+    def select_contours(self, contours):
+        for cnt in contours:
+            # 方框拟合
+            perimeter = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.03 * perimeter, True)
+            # 筛选
+            if (len(approx) == 4 and
+                    cv2.isContourConvex(approx) and
+                    self.min_area < cv2.contourArea(approx) < self.max_area):
+                self.max_area = cv2.contourArea(approx)
+                self.re_contour = approx
+
+    @staticmethod
+    def enhance_img(img):
+        bgr = []
+        for channel in cv2.split(img):
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            bgr.append(clahe.apply(channel))
+        cla_img = cv2.merge((bgr[0], bgr[1], bgr[2]))
+        return cla_img
+
+    def start_extract(self):
+        resize_img = self.resize()
+        pre_img = cv2.cvtColor(resize_img, cv2.COLOR_BGR2GRAY)
+        cv2.imshow('123', pre_img)
+        cv2.waitKey(0)
+        pre_img = cv2.bilateralFilter(pre_img, 9, 75, 75)
+        pre_img = cv2.adaptiveThreshold(pre_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 115, 4)
+        pre_img = cv2.medianBlur(pre_img, 11)
+        pre_img = cv2.copyMakeBorder(pre_img, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        edges = cv2.Canny(pre_img, 200, 250)
+        cv2.imshow('123', pre_img)
+        cv2.waitKey(0)
+        _, contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        self.select_contours(contours)
+        # 对点进行排序，设置四个角点
+        receipt_contour = self.sort_point(self.re_contour[:, 0])
+        receipt_contour = self.contour_offset(receipt_contour, (-5, -5))
+
+        # 计算原图中发票的大小
+        s_points = receipt_contour.dot(self.height / self.re_height)
+
+        # Using Euclidean distance
+        # Calculate maximum height (maximal length of vertical edges) and width
+        new_height = max(np.linalg.norm(s_points[0] - s_points[1]),
+                     np.linalg.norm(s_points[2] - s_points[3]))
+        new_width = max(np.linalg.norm(s_points[1] - s_points[2]),
+                    np.linalg.norm(s_points[3] - s_points[0]))
+
+        # Create target points
+        t_points = np.array([[0, 0], [0, new_height], [new_width, new_height], [new_width, 0]], np.float32)
+
+        # getPerspectiveTransform() needs float32
+        if s_points.dtype != np.float32:
+            s_points = s_points.astype(np.float32)
+
+        # 透视变换
+        M = cv2.getPerspectiveTransform(s_points, t_points)
+        receipt_img = cv2.warpPerspective(self.img, M, (int(new_width), int(new_height)))
+        receipt_img = self.enhance_img(receipt_img)
+        re_img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        re_img[0:int(new_height), 0:int(new_width)] = receipt_img
+        img_result = np.hstack((self.img, re_img))
+        cv2.imwrite("border_test/result_0.jpg", img_result)
+        print('WarpPerspective successful')
+        return receipt_img
+
+
+
+if __name__ == '__main__':
+    path_name = 'pure_org/3.jpg'
+    im = cv2.imread(path_name)
+    extract = ReceiptExtract(im)
+    extract.start_extract()
+
