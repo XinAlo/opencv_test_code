@@ -1,0 +1,178 @@
+# -*- coding:utf-8 -*-
+# ---------------- #
+# author：XinAlo   #
+#   2018-07-10     #
+# create bounding box by edges #
+#  Euclidean distance cluster  #
+# ---------------- #
+import cv2
+import numpy as np
+from sklearn import cluster
+import random
+
+# cluster 参数
+min_neighbors = 2
+min_cluster_dist = 25
+
+
+class ContoursDetection(object):
+    def __init__(self, img):
+        self.img = img
+        self.contours = self.find_cont()
+        self.bound_box = self.rect_bounding()
+
+    def find_cont(self):
+        gray = cv2.cvtColor(self.img, cv2.COLOR_BGR2BGRA)
+        blur = cv2.medianBlur(gray, 5)
+        edges = cv2.Canny(blur, 100, 200)
+        image, contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        return contours
+
+    def rect_bounding(self):
+        bounding_box = []
+        for i, cont in enumerate(self.contours):
+            box = cv2.minAreaRect(cont)
+            box = cv2.boxPoints(box)
+            box = np.int0(box)
+            bounding_box.append(box)
+        # print(bounding_box[0])
+        # print(bounding_box[1])
+        return bounding_box
+
+    def build_kd_tree(self):
+        feature = []
+        coor_box = []
+        for box_local in self.bound_box:
+            for i in range(4):
+                feature.append(box_local[i])
+
+        feature = np.array(feature, dtype=np.float32)
+        # print(type(feature[0][0]))
+
+        FLANN_INDEX_KDTREE = 1
+        params = dict(algorithm=FLANN_INDEX_KDTREE, trees=4)
+        flann = cv2.flann_Index(feature, params)
+        # kd_tree = flann.build(feature, params)
+
+        return flann
+
+    def find_neighbor_contours(self, cnt, min_cluster_dist, kd_tree, nb_point):
+        already_processed = []
+        cnt = np.array(cnt, dtype=np.float32)
+        for query_py in cnt:
+            query_py = np.array([query_py], dtype=np.float32)
+            retval, indices, dists = kd_tree.radiusSearch(query_py, min_cluster_dist, nb_point)
+        return 0
+
+    def cluster(self):
+        '''
+        already_processed = []
+        point_size = len(self.bound_box) * 4
+        kd_tree = self.build_kd_tree()
+        '''
+        queue = []
+        x = []
+        labels = []
+        label_cont = []
+
+
+        # 提取每个方框的点，放在一起，进行聚类
+        for cont in self.bound_box:
+            for cnt in cont:
+                x.append(cnt)
+        clu_predict = cluster.DBSCAN(eps=min_cluster_dist, min_samples=min_neighbors)
+        predict_labels = clu_predict.fit_predict(x)
+        print(len(predict_labels))
+        # 重新组合，与 self.bound_box 对应
+        for i, label in enumerate(predict_labels):
+            if i % 4 == 0 and i != 0:
+                label_cont.append(labels)
+                labels = []
+            labels.append(label)
+        label_cont.append(predict_labels[-4:])
+
+        # 根据框点的聚类，重新进行组合分类，对分类标签进行归类 queue = [[],[], ...]
+        for cont_clu_value in label_cont:
+            del_repeat = list(set(cont_clu_value))    # 去除list重复元素
+            for value in del_repeat:
+                clu_label = []
+                if queue:
+                    for k, queue_value in enumerate(queue):
+                        if value in queue_value:
+                            clu_label.append(k)
+                    if clu_label:
+                        re_queue = []
+                        sub_queue = del_repeat
+                        for p in clu_label:
+                            sub_queue = queue[p] + sub_queue
+                            sub_queue = list(set(sub_queue))
+                            re_queue.append(sub_queue)
+                        del_list = []
+                        for j in clu_label:
+                            del_list.append(queue[j])
+                        for del_data in del_list:
+                            queue.remove(del_data)
+                        queue.append(sub_queue)
+                    else:
+                        queue.append(del_repeat)
+
+                else:
+                    queue.append(del_repeat)
+
+        print('queue')
+        print(queue)
+
+        # 根据重新分类好的queue里的组合，对框进行分类
+        # 创建类别字典
+        cluster_result = {}
+        for j in range(len(queue)):
+            cluster_result[j] = []
+
+        for k, cont_value in enumerate(label_cont):
+            break_label = False
+            for value_label in cont_value:
+                if break_label:
+                    break
+                for i, s_queue in enumerate(queue):
+                    if break_label:
+                        break
+                    if value_label in s_queue:
+                        cluster_result[i].append(self.bound_box[k])
+                        break_label = True
+
+        print(len(cluster_result))
+
+        '''
+        for i, cont in enumerate(self.bound_box):
+            if i in already_processed:
+                continue
+
+            queue.append(cont)
+            already_processed.append(i)
+
+            for cnt in queue:
+                neighbor_contours = self.find_neighbor_contours(cnt, min_cluster_dist, kd_tree, point_size)
+        '''
+        return cluster_result
+
+
+def draw_cluster(img, cluster_data):
+    img_clu = img.copy()
+    for sub_cluster in cluster_data.values():
+        b = random.randint(0, 255)
+        g = random.randint(0, 255)
+        r = random.randint(0, 255)
+        img_clu = cv2.drawContours(img_clu, sub_cluster, -1, (b, g, r), 2)
+
+    res = np.hstack((img, img_clu))
+    cv2.imshow('123', res)
+    cv2.imwrite('cluster_re/20_clu.jpg', res)
+    cv2.waitKey(0)
+
+
+if __name__ == '__main__':
+    im = cv2.imread('cv_sample/20.jpg')
+    contour_list = ContoursDetection(im)
+    data = contour_list.cluster()
+    draw_cluster(im, data)
+
